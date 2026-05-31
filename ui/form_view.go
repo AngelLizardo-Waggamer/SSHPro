@@ -31,5 +31,5 @@ func (m Model) viewForm() string {
 	b.WriteString("\n\n")
 	b.WriteString(m.styles.help.Render("[tab] siguiente • [shift+tab] anterior • [enter] guardar • [esc] cancelar"))
 
-	return m.styles.formContainer.Render(b.String())
+	return m.renderFrame(b.String(), m.styles.formContainer)
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	sshcmd "ssh-pro/ssh"
 	"ssh-pro/storage"
@@ -46,10 +47,25 @@ type Model struct {
 // NewModel creates a new UI model.
 func NewModel(store *storage.Store, hosts []storage.Host) Model {
 	items := listItemsFromHosts(hosts)
-	l := list.New(items, list.NewDefaultDelegate(), 0, 0)
+	delegate := list.NewDefaultDelegate()
+	selectedBase := lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder(), false, false, false, true).
+		BorderForeground(lipgloss.Color("33")).
+		Foreground(lipgloss.Color("81")).
+		Padding(0, 0, 0, 1)
+	delegate.Styles.SelectedTitle = selectedBase
+	delegate.Styles.SelectedDesc = selectedBase.Foreground(lipgloss.Color("75"))
+	l := list.New(items, delegate, 0, 0)
+	l.Title = "Hosts disponibles:"
+	l.SetShowTitle(true)
 	l.SetShowHelp(false)
 	l.SetShowStatusBar(false)
-	l.SetFilteringEnabled(false)
+	l.SetFilteringEnabled(true)
+	l.SetShowFilter(true)
+	l.FilterInput.Prompt = "Buscar: "
+	l.FilterInput.PromptStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("75"))
+	l.FilterInput.TextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("81"))
+	l.FilterInput.Placeholder = "escribe para filtrar"
 	l.SetShowPagination(true)
 
 	return Model{
@@ -101,6 +117,12 @@ func (m Model) updateList(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.KeyMsg:
+		if m.list.SettingFilter() {
+			if msg.String() == "ctrl+c" {
+				return m, tea.Quit
+			}
+			break
+		}
 		switch msg.String() {
 		case "ctrl+c", "q":
 			return m, tea.Quit
@@ -182,8 +204,9 @@ func (m Model) updateForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) updateListSize() {
-	width := max(20, m.width-6)
-	height := max(6, m.height-8)
+	contentWidth, contentHeight := m.contentSize()
+	width := max(20, contentWidth)
+	height := max(6, contentHeight-listReservedLines())
 	m.list.SetSize(width, height)
 }
 
