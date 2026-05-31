@@ -171,7 +171,11 @@ func (m Model) updateList(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "enter":
 			if host, _, ok := m.selectedHost(); ok {
-				cmd := sshcmd.BuildCommand(host)
+				cmd, err := sshcmd.BuildCommand(host)
+				if err != nil {
+					m.status = fmt.Sprintf("Error al preparar SSH: %v", err)
+					return m, nil
+				}
 				return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
 					return sshFinishedMsg{err: err}
 				})
@@ -247,7 +251,7 @@ func (m *Model) startForm(host storage.Host, editIndex int) {
 		newTextInput("Nombre: ", "Servidor-Produccion"),
 		newTextInput("Usuario: ", "ubuntu"),
 		newTextInput("Host/IP: ", "192.168.1.50"),
-		newTextInput("Llave SSH (opcional): ", "/home/user/.ssh/id_ed25519"),
+		newTextInput("Llave SSH (opcional): ", "id_ed25519"),
 		newTextInput("Puerto: ", "22"),
 	}
 
