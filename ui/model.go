@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	sshcmd "ssh-pro/ssh"
 	"ssh-pro/storage"
@@ -35,8 +36,11 @@ type Model struct {
 	inputs    []textinput.Model
 	focus     int
 	editIndex int
-	formError string
-	status    string
+	formError     string
+	status        string
+	confirmDelete bool
+	confirmIndex  int
+	confirmName   string
 
 	styles styles
 	width  int
@@ -46,19 +50,35 @@ type Model struct {
 // NewModel creates a new UI model.
 func NewModel(store *storage.Store, hosts []storage.Host) Model {
 	items := listItemsFromHosts(hosts)
-	l := list.New(items, list.NewDefaultDelegate(), 0, 0)
+	delegate := list.NewDefaultDelegate()
+	selectedBase := lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder(), false, false, false, true).
+		BorderForeground(lipgloss.Color("33")).
+		Foreground(lipgloss.Color("81")).
+		Padding(0, 0, 0, 1)
+	delegate.Styles.SelectedTitle = selectedBase
+	delegate.Styles.SelectedDesc = selectedBase.Foreground(lipgloss.Color("75"))
+	l := list.New(items, delegate, 0, 0)
+	l.Title = "Hosts disponibles:"
+	l.SetShowTitle(true)
 	l.SetShowHelp(false)
 	l.SetShowStatusBar(false)
-	l.SetFilteringEnabled(false)
+	l.SetFilteringEnabled(true)
+	l.SetShowFilter(true)
+	l.FilterInput.Prompt = "Buscar: "
+	l.FilterInput.PromptStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("75"))
+	l.FilterInput.TextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("81"))
+	l.FilterInput.Placeholder = "escribe para filtrar"
 	l.SetShowPagination(true)
 
 	return Model{
-		store:     store,
-		hosts:     hosts,
-		list:      l,
-		mode:      modeList,
-		editIndex: -1,
-		styles:    defaultStyles(),
+		store:        store,
+		hosts:        hosts,
+		list:         l,
+		mode:         modeList,
+		editIndex:    -1,
+		confirmIndex: -1,
+		styles:       defaultStyles(),
 	}
 }
 
@@ -101,6 +121,35 @@ func (m Model) updateList(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.KeyMsg:
+		if m.list.SettingFilter() {
+			if msg.String() == "ctrl+c" {
+				return m, tea.Quit
+			}
+			break
+		}
+		if m.confirmDelete {
+			switch msg.String() {
+			case "y", "enter":
+				if m.confirmIndex >= 0 {
+					if err := m.deleteHost(m.confirmIndex); err != nil {
+						m.status = fmt.Sprintf("Error al eliminar: %v", err)
+					}
+				}
+				m.confirmDelete = false
+				m.confirmIndex = -1
+				m.confirmName = ""
+				return m, nil
+			case "n", "esc":
+				m.confirmDelete = false
+				m.confirmIndex = -1
+				m.confirmName = ""
+				return m, nil
+			case "ctrl+c", "q":
+				return m, tea.Quit
+			default:
+				return m, nil
+			}
+		}
 		switch msg.String() {
 		case "ctrl+c", "q":
 			return m, tea.Quit
@@ -113,15 +162,20 @@ func (m Model) updateList(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "d":
-			if _, idx, ok := m.selectedHost(); ok {
-				if err := m.deleteHost(idx); err != nil {
-					m.status = fmt.Sprintf("Error al eliminar: %v", err)
-				}
+			if host, idx, ok := m.selectedHost(); ok {
+				m.confirmDelete = true
+				m.confirmIndex = idx
+				m.confirmName = host.Name
+				m.status = ""
 			}
 			return m, nil
 		case "enter":
 			if host, _, ok := m.selectedHost(); ok {
-				cmd := sshcmd.BuildCommand(host)
+				cmd, err := sshcmd.BuildCommand(host)
+				if err != nil {
+					m.status = fmt.Sprintf("Error al preparar SSH: %v", err)
+					return m, nil
+				}
 				return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
 					return sshFinishedMsg{err: err}
 				})
@@ -182,8 +236,9 @@ func (m Model) updateForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) updateListSize() {
-	width := max(20, m.width-6)
-	height := max(6, m.height-8)
+	contentWidth, contentHeight := m.contentSize()
+	width := max(20, contentWidth)
+	height := max(6, contentHeight-listReservedLines())
 	m.list.SetSize(width, height)
 }
 
@@ -196,7 +251,7 @@ func (m *Model) startForm(host storage.Host, editIndex int) {
 		newTextInput("Nombre: ", "Servidor-Produccion"),
 		newTextInput("Usuario: ", "ubuntu"),
 		newTextInput("Host/IP: ", "192.168.1.50"),
-		newTextInput("Llave SSH (opcional): ", "/home/user/.ssh/id_ed25519"),
+		newTextInput("Llave SSH (opcional): ", "id_ed25519"),
 		newTextInput("Puerto: ", "22"),
 	}
 

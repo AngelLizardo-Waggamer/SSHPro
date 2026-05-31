@@ -7,6 +7,7 @@ type styles struct {
 	title         lipgloss.Style
 	help          lipgloss.Style
 	status        lipgloss.Style
+	subtitle      lipgloss.Style
 	focusedInput  lipgloss.Style
 	blurredInput  lipgloss.Style
 	errorMessage  lipgloss.Style
@@ -17,14 +18,15 @@ type styles struct {
 func defaultStyles() styles {
 	base := lipgloss.NewStyle().Padding(1, 2)
 	return styles{
-		container:     base.Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("63")),
-		title:         lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205")),
-		help:          lipgloss.NewStyle().Foreground(lipgloss.Color("241")),
-		status:        lipgloss.NewStyle().Foreground(lipgloss.Color("84")),
+		container:     base.Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("33")),
+		title:         lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39")),
+		help:          lipgloss.NewStyle().Foreground(lipgloss.Color("110")),
+		status:        lipgloss.NewStyle().Foreground(lipgloss.Color("81")),
+		subtitle:      lipgloss.NewStyle().Foreground(lipgloss.Color("244")),
 		focusedInput:  lipgloss.NewStyle().Foreground(lipgloss.Color("81")),
-		blurredInput:  lipgloss.NewStyle().Foreground(lipgloss.Color("245")),
+		blurredInput:  lipgloss.NewStyle().Foreground(lipgloss.Color("250")),
 		errorMessage:  lipgloss.NewStyle().Foreground(lipgloss.Color("203")),
-		formTitle:     lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("141")),
-		formContainer: base.Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("99")),
+		formTitle:     lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39")),
+		formContainer: base.Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("33")),
 	}
 }
