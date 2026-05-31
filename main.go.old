@@ -1,0 +1,895 @@
+package main
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+
+	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/textinput"
+	tea "github.com/charmbracelet/bubbletea"
+)
+
+type screen int
+
+const (
+	screenMainMenu screen = iota
+	screenConnectSelect
+	screenNewUserAt
+	screenNewKeyChoice
+	screenNewKeySelect
+	screenNewKeyManual
+	screenNewSaveChoice
+	screenNewNameInput
+	screenEditSelect
+	screenEditAction
+	screenEditFieldInput
+	screenMessage
+)
+
+type Host struct {
+	Name string  `json:"name"`
+	User string  `json:"user"`
+	IP   string  `json:"ip"`
+	Key  *string `json:"key"`
+}
+
+type menuItem struct {
+	title string
+	desc  string
+	id    string
+}
+
+func (i menuItem) Title() string       { return i.title }
+func (i menuItem) Description() string { return i.desc }
+func (i menuItem) FilterValue() string { return i.title + " " + i.desc }
+
+type hostItem struct {
+	index int
+	host  Host
+}
+
+func (i hostItem) Title() string { return i.host.Name }
+func (i hostItem) Description() string {
+	return fmt.Sprintf("%s@%s", i.host.User, i.host.IP)
+}
+func (i hostItem) FilterValue() string {
+	return fmt.Sprintf("%s %s@%s", i.host.Name, i.host.User, i.host.IP)
+}
+
+type keyItem struct {
+	name string
+}
+
+func (i keyItem) Title() string       { return i.name }
+func (i keyItem) Description() string { return "" }
+func (i keyItem) FilterValue() string { return i.name }
+
+type sshFinishedMsg struct{ err error }
+type errMsg struct{ err error }
+
+type newHostState struct {
+	userAt string
+	user   string
+	ip     string
+	key    string
+	save   bool
+	name   string
+}
+
+type editHostState struct {
+	index int
+	host  Host
+	field int
+}
+
+type Model struct {
+	screen       screen
+	width        int
+	height       int
+	homeDir      string
+	configPath   string
+	keysDir      string
+	hosts        []Host
+	selectedHost *Host
+	message      string
+	messageNext  screen
+
+	mainMenu   list.Model
+	hostList   list.Model
+	actionMenu list.Model
+	keyMenu    list.Model
+	saveMenu   list.Model
+	keysList   list.Model
+
+	input      textinput.Model
+	inputLabel string
+
+	newHost  newHostState
+	editHost editHostState
+}
+
+func main() {
+	m := initialModel()
+	p := tea.NewProgram(m, tea.WithAltScreen())
+	if _, err := p.Run(); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+}
+
+func initialModel() Model {
+	home, _ := os.UserHomeDir()
+	configPath := filepath.Join(home, ".ssh_configured_hosts.json")
+	keysDir := filepath.Join(home, ".ssh", "keys")
+
+	mainMenu := newMenuList("Menu principal", []list.Item{
+		menuItem{title: "Conectar a Host Configurado", id: "connect"},
+		menuItem{title: "Nuevo Host", id: "new"},
+		menuItem{title: "Editar Hosts", id: "edit"},
+		menuItem{title: "Salir", id: "exit"},
+	}, false)
+
+	actionMenu := newMenuList("Acciones", []list.Item{
+		menuItem{title: "Cancelar", id: "cancel"},
+		menuItem{title: "Editar", id: "edit"},
+		menuItem{title: "Borrar", id: "delete"},
+	}, false)
+
+	keyMenu := newMenuList("Seleccion de llave", []list.Item{
+		menuItem{title: "Predeterminada (sin llave)", id: "default"},
+		menuItem{title: "Seleccionar desde $HOME/.ssh/keys", id: "pick"},
+		menuItem{title: "Ruta manual", id: "manual"},
+	}, false)
+
+	saveMenu := newMenuList("Guardar host", []list.Item{
+		menuItem{title: "Conectar y NO guardar", id: "temp"},
+		menuItem{title: "Guardar host y conectar", id: "save"},
+	}, false)
+
+	return Model{
+		screen:     screenMainMenu,
+		homeDir:    home,
+		configPath: configPath,
+		keysDir:    keysDir,
+		mainMenu:   mainMenu,
+		hostList:   newHostList("Hosts configurados", nil, 0, 0),
+		actionMenu: actionMenu,
+		keyMenu:    keyMenu,
+		saveMenu:   saveMenu,
+		keysList:   newKeyList("Llaves", nil, 0, 0),
+		input:      newTextInput(),
+	}
+}
+
+func (m Model) Init() tea.Cmd {
+	return nil
+}
+
+func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		m.resizeLists()
+		return m, nil
+	case sshFinishedMsg:
+		if msg.err != nil {
+			m.message = fmt.Sprintf("SSH termino con error: %v", msg.err)
+		} else {
+			m.message = "SSH finalizado."
+		}
+		m.messageNext = screenMainMenu
+		m.screen = screenMessage
+		return m, nil
+	case errMsg:
+		m.message = fmt.Sprintf("Error: %v", msg.err)
+		m.messageNext = screenMainMenu
+		m.screen = screenMessage
+		return m, nil
+	case tea.KeyMsg:
+		if handled, nextModel, nextCmd := m.handleKey(msg); handled {
+			return nextModel, nextCmd
+		}
+	}
+
+	var cmd tea.Cmd
+	switch m.screen {
+	case screenMainMenu:
+		m.mainMenu, cmd = m.mainMenu.Update(msg)
+	case screenConnectSelect, screenEditSelect:
+		m.hostList, cmd = m.hostList.Update(msg)
+	case screenEditAction:
+		m.actionMenu, cmd = m.actionMenu.Update(msg)
+	case screenNewKeyChoice:
+		m.keyMenu, cmd = m.keyMenu.Update(msg)
+	case screenNewSaveChoice:
+		m.saveMenu, cmd = m.saveMenu.Update(msg)
+	case screenNewKeySelect:
+		m.keysList, cmd = m.keysList.Update(msg)
+	case screenNewUserAt, screenNewKeyManual, screenNewNameInput, screenEditFieldInput:
+		m.input, cmd = m.input.Update(msg)
+	}
+
+	return m, cmd
+}
+
+func (m Model) View() string {
+	header := func(title string) string {
+		return title + "\n" + strings.Repeat("=", len(title)) + "\n\n"
+	}
+
+	switch m.screen {
+	case screenMainMenu:
+		return header("SSH PRO") + m.mainMenu.View() + "\n\nEnter para seleccionar."
+	case screenConnectSelect:
+		return header("SSH PRO - Conectar") + m.hostList.View() + "\n\nEsc para volver."
+	case screenNewUserAt:
+		return header("SSH PRO - Nuevo Host") + m.inputLabel + "\n" + m.input.View() + "\n\nEnter para continuar, Esc para cancelar."
+	case screenNewKeyChoice:
+		return header("SSH PRO - Llave") + m.keyMenu.View() + "\n\nEsc para cancelar."
+	case screenNewKeySelect:
+		return header("SSH PRO - Seleccionar llave") + m.keysList.View() + "\n\nEsc para cancelar."
+	case screenNewKeyManual:
+		return header("SSH PRO - Ruta de llave") + m.inputLabel + "\n" + m.input.View() + "\n\nEnter para continuar, Esc para cancelar."
+	case screenNewSaveChoice:
+		return header("SSH PRO - Guardar") + m.saveMenu.View() + "\n\nEsc para cancelar."
+	case screenNewNameInput:
+		return header("SSH PRO - Nombre") + m.inputLabel + "\n" + m.input.View() + "\n\nEnter para continuar, Esc para cancelar."
+	case screenEditSelect:
+		return header("SSH PRO - Editar") + m.hostList.View() + "\n\nEsc para volver."
+	case screenEditAction:
+		hostLine := ""
+		if m.selectedHost != nil {
+			hostLine = fmt.Sprintf("Host: %s (%s@%s)\n\n", m.selectedHost.Name, m.selectedHost.User, m.selectedHost.IP)
+		}
+		return header("SSH PRO - Editar Host") + hostLine + m.actionMenu.View() + "\n\nEsc para volver."
+	case screenEditFieldInput:
+		return header("SSH PRO - Editar Host") + m.inputLabel + "\n" + m.input.View() + "\n\nEnter para guardar campo, Esc para cancelar."
+	case screenMessage:
+		return header("SSH PRO") + m.message + "\n\nPresiona Enter para continuar."
+	default:
+		return ""
+	}
+}
+
+func (m Model) handleKey(msg tea.KeyMsg) (bool, Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return true, m, tea.Quit
+	}
+
+	switch m.screen {
+	case screenMainMenu:
+		if msg.String() == "enter" {
+			nextModel, nextCmd := m.handleMainSelection()
+			return true, nextModel, nextCmd
+		}
+	case screenConnectSelect:
+		if shouldGoBack(msg, m.hostList) {
+			m.screen = screenMainMenu
+			return true, m, nil
+		}
+		if msg.String() == "enter" {
+			nextModel, nextCmd := m.handleConnectSelection()
+			return true, nextModel, nextCmd
+		}
+	case screenEditSelect:
+		if shouldGoBack(msg, m.hostList) {
+			m.screen = screenMainMenu
+			return true, m, nil
+		}
+		if msg.String() == "enter" {
+			nextModel, nextCmd := m.handleEditSelection()
+			return true, nextModel, nextCmd
+		}
+	case screenEditAction:
+		if shouldGoBack(msg, m.actionMenu) {
+			m.screen = screenMainMenu
+			return true, m, nil
+		}
+		if msg.String() == "enter" {
+			nextModel, nextCmd := m.handleEditAction()
+			return true, nextModel, nextCmd
+		}
+	case screenNewKeyChoice:
+		if shouldGoBack(msg, m.keyMenu) {
+			m.screen = screenMainMenu
+			return true, m, nil
+		}
+		if msg.String() == "enter" {
+			nextModel, nextCmd := m.handleKeyChoice()
+			return true, nextModel, nextCmd
+		}
+	case screenNewSaveChoice:
+		if shouldGoBack(msg, m.saveMenu) {
+			m.screen = screenMainMenu
+			return true, m, nil
+		}
+		if msg.String() == "enter" {
+			nextModel, nextCmd := m.handleSaveChoice()
+			return true, nextModel, nextCmd
+		}
+	case screenNewKeySelect:
+		if shouldGoBack(msg, m.keysList) {
+			m.screen = screenMainMenu
+			return true, m, nil
+		}
+		if msg.String() == "enter" {
+			nextModel, nextCmd := m.handleKeySelection()
+			return true, nextModel, nextCmd
+		}
+	case screenNewUserAt:
+		if msg.String() == "esc" {
+			m.screen = screenMainMenu
+			return true, m, nil
+		}
+		if msg.String() == "enter" {
+			nextModel, nextCmd := m.handleUserAtInput()
+			return true, nextModel, nextCmd
+		}
+	case screenNewKeyManual:
+		if msg.String() == "esc" {
+			m.screen = screenMainMenu
+			return true, m, nil
+		}
+		if msg.String() == "enter" {
+			nextModel, nextCmd := m.handleManualKeyInput()
+			return true, nextModel, nextCmd
+		}
+	case screenNewNameInput:
+		if msg.String() == "esc" {
+			m.screen = screenMainMenu
+			return true, m, nil
+		}
+		if msg.String() == "enter" {
+			nextModel, nextCmd := m.handleNameInput()
+			return true, nextModel, nextCmd
+		}
+	case screenEditFieldInput:
+		if msg.String() == "esc" {
+			m.screen = screenMainMenu
+			return true, m, nil
+		}
+		if msg.String() == "enter" {
+			nextModel, nextCmd := m.handleEditFieldInput()
+			return true, nextModel, nextCmd
+		}
+	case screenMessage:
+		if msg.String() == "enter" || msg.String() == "esc" {
+			m.screen = m.messageNext
+			return true, m, nil
+		}
+	}
+
+	return false, m, nil
+}
+
+func (m Model) handleMainSelection() (Model, tea.Cmd) {
+	item := m.mainMenu.SelectedItem()
+	if item == nil {
+		return m, nil
+	}
+	switch item.(menuItem).id {
+	case "connect":
+		hosts, err := loadHosts(m.configPath)
+		if err != nil {
+			return m, func() tea.Msg { return errMsg{err: err} }
+		}
+		if len(hosts) == 0 {
+			m.message = "No hay hosts configurados."
+			m.messageNext = screenMainMenu
+			m.screen = screenMessage
+			return m, nil
+		}
+		m.hosts = hosts
+		m.hostList = newHostList("Hosts configurados", hosts, m.width, m.height)
+		m.screen = screenConnectSelect
+		return m, nil
+	case "new":
+		m.newHost = newHostState{}
+		m.inputLabel = "Usuario@IP"
+		m.input = newTextInputWithValue("", "usuario@IP")
+		m.screen = screenNewUserAt
+		return m, nil
+	case "edit":
+		hosts, err := loadHosts(m.configPath)
+		if err != nil {
+			return m, func() tea.Msg { return errMsg{err: err} }
+		}
+		if len(hosts) == 0 {
+			m.message = "No hay hosts configurados."
+			m.messageNext = screenMainMenu
+			m.screen = screenMessage
+			return m, nil
+		}
+		m.hosts = hosts
+		m.hostList = newHostList("Hosts configurados", hosts, m.width, m.height)
+		m.screen = screenEditSelect
+		return m, nil
+	case "exit":
+		return m, tea.Quit
+	default:
+		return m, nil
+	}
+}
+
+func (m Model) handleConnectSelection() (Model, tea.Cmd) {
+	item := m.hostList.SelectedItem()
+	if item == nil {
+		return m, nil
+	}
+	hi := item.(hostItem)
+	host := hi.host
+	return m, startSSHCmd(m.homeDir, host.User, host.IP, keyValue(host))
+}
+
+func (m Model) handleEditSelection() (Model, tea.Cmd) {
+	item := m.hostList.SelectedItem()
+	if item == nil {
+		return m, nil
+	}
+	hi := item.(hostItem)
+	host := hi.host
+	m.selectedHost = &host
+	m.editHost = editHostState{index: hi.index, host: host, field: 0}
+	m.actionMenu.Select(0)
+	m.screen = screenEditAction
+	return m, nil
+}
+
+func (m Model) handleEditAction() (Model, tea.Cmd) {
+	item := m.actionMenu.SelectedItem()
+	if item == nil {
+		return m, nil
+	}
+	switch item.(menuItem).id {
+	case "cancel":
+		m.screen = screenMainMenu
+		return m, nil
+	case "delete":
+		if m.editHost.index >= 0 && m.editHost.index < len(m.hosts) {
+			m.hosts = append(m.hosts[:m.editHost.index], m.hosts[m.editHost.index+1:]...)
+			if err := saveHosts(m.configPath, m.hosts); err != nil {
+				return m, func() tea.Msg { return errMsg{err: err} }
+			}
+			m.message = "Host eliminado."
+			m.messageNext = screenMainMenu
+			m.screen = screenMessage
+			return m, nil
+		}
+		return m, nil
+	case "edit":
+		m.editHost.field = 0
+		m.inputLabel = "Nombre"
+		m.input = newTextInputWithValue(m.editHost.host.Name, "")
+		m.screen = screenEditFieldInput
+		return m, nil
+	default:
+		return m, nil
+	}
+}
+
+func (m Model) handleEditFieldInput() (Model, tea.Cmd) {
+	value := strings.TrimSpace(m.input.Value())
+	switch m.editHost.field {
+	case 0:
+		if value == "" {
+			m.message = "El nombre no puede estar vacio."
+			m.messageNext = screenEditFieldInput
+			m.screen = screenMessage
+			return m, nil
+		}
+		m.editHost.host.Name = value
+		m.editHost.field = 1
+		m.inputLabel = "Usuario"
+		m.input = newTextInputWithValue(m.editHost.host.User, "")
+		return m, nil
+	case 1:
+		if value == "" {
+			m.message = "El usuario no puede estar vacio."
+			m.messageNext = screenEditFieldInput
+			m.screen = screenMessage
+			return m, nil
+		}
+		m.editHost.host.User = value
+		m.editHost.field = 2
+		m.inputLabel = "IP o Host"
+		m.input = newTextInputWithValue(m.editHost.host.IP, "")
+		return m, nil
+	case 2:
+		if value == "" {
+			m.message = "La IP/Host no puede estar vacia."
+			m.messageNext = screenEditFieldInput
+			m.screen = screenMessage
+			return m, nil
+		}
+		m.editHost.host.IP = value
+		m.editHost.field = 3
+		m.inputLabel = "Ruta de llave (vacio para ninguna)"
+		m.input = newTextInputWithValue(keyValue(m.editHost.host), "")
+		return m, nil
+	case 3:
+		value = expandHome(strings.TrimSpace(value), m.homeDir)
+		if value == "" {
+			m.editHost.host.Key = nil
+		} else {
+			m.editHost.host.Key = strPtr(value)
+		}
+
+		if err := m.saveEditedHost(); err != nil {
+			return m, func() tea.Msg { return errMsg{err: err} }
+		}
+		m.message = "Host actualizado."
+		m.messageNext = screenMainMenu
+		m.screen = screenMessage
+		return m, nil
+	default:
+		return m, nil
+	}
+}
+
+func (m Model) handleUserAtInput() (Model, tea.Cmd) {
+	value := strings.TrimSpace(m.input.Value())
+	user, ip, ok := parseUserAt(value)
+	if !ok {
+		m.message = "Formato invalido. Usa usuario@IP."
+		m.messageNext = screenNewUserAt
+		m.screen = screenMessage
+		return m, nil
+	}
+
+	m.newHost.userAt = value
+	m.newHost.user = user
+	m.newHost.ip = ip
+	m.screen = screenNewKeyChoice
+	return m, nil
+}
+
+func (m Model) handleKeyChoice() (Model, tea.Cmd) {
+	item := m.keyMenu.SelectedItem()
+	if item == nil {
+		return m, nil
+	}
+	switch item.(menuItem).id {
+	case "default":
+		m.newHost.key = ""
+		m.screen = screenNewSaveChoice
+		return m, nil
+	case "pick":
+		keys, err := listKeyFiles(m.keysDir)
+		if err != nil {
+			return m, func() tea.Msg { return errMsg{err: err} }
+		}
+		if len(keys) == 0 {
+			m.message = "No se encontraron llaves en $HOME/.ssh/keys."
+			m.messageNext = screenNewKeyChoice
+			m.screen = screenMessage
+			return m, nil
+		}
+		m.keysList = newKeyList("Llaves", keys, m.width, m.height)
+		m.screen = screenNewKeySelect
+		return m, nil
+	case "manual":
+		m.inputLabel = "Ruta de llave (vacio para predeterminada)"
+		m.input = newTextInputWithValue("", "")
+		m.screen = screenNewKeyManual
+		return m, nil
+	default:
+		return m, nil
+	}
+}
+
+func (m Model) handleKeySelection() (Model, tea.Cmd) {
+	item := m.keysList.SelectedItem()
+	if item == nil {
+		return m, nil
+	}
+	keyName := item.(keyItem).name
+	m.newHost.key = filepath.Join(m.keysDir, keyName)
+	m.screen = screenNewSaveChoice
+	return m, nil
+}
+
+func (m Model) handleManualKeyInput() (Model, tea.Cmd) {
+	value := strings.TrimSpace(m.input.Value())
+	m.newHost.key = expandHome(value, m.homeDir)
+	m.screen = screenNewSaveChoice
+	return m, nil
+}
+
+func (m Model) handleSaveChoice() (Model, tea.Cmd) {
+	item := m.saveMenu.SelectedItem()
+	if item == nil {
+		return m, nil
+	}
+	switch item.(menuItem).id {
+	case "temp":
+		return m, startSSHCmd(m.homeDir, m.newHost.user, m.newHost.ip, m.newHost.key)
+	case "save":
+		m.inputLabel = "Nombre descriptivo (vacio usa usuario@IP)"
+		m.input = newTextInputWithValue("", "")
+		m.screen = screenNewNameInput
+		return m, nil
+	default:
+		return m, nil
+	}
+}
+
+func (m Model) handleNameInput() (Model, tea.Cmd) {
+	value := strings.TrimSpace(m.input.Value())
+	if value == "" {
+		value = m.newHost.userAt
+	}
+	m.newHost.name = value
+
+	hosts, err := loadHosts(m.configPath)
+	if err != nil {
+		return m, func() tea.Msg { return errMsg{err: err} }
+	}
+	host := Host{
+		Name: m.newHost.name,
+		User: m.newHost.user,
+		IP:   m.newHost.ip,
+		Key:  strPtrOrNil(m.newHost.key),
+	}
+	hosts = append(hosts, host)
+	if err := saveHosts(m.configPath, hosts); err != nil {
+		return m, func() tea.Msg { return errMsg{err: err} }
+	}
+	return m, startSSHCmd(m.homeDir, m.newHost.user, m.newHost.ip, m.newHost.key)
+}
+
+func (m *Model) resizeLists() {
+	w := m.width - 4
+	h := m.height - 6
+	if w < 20 {
+		w = 20
+	}
+	if h < 5 {
+		h = 5
+	}
+
+	m.mainMenu.SetSize(w, h)
+	m.hostList.SetSize(w, h)
+	m.actionMenu.SetSize(w, h)
+	m.keyMenu.SetSize(w, h)
+	m.saveMenu.SetSize(w, h)
+	m.keysList.SetSize(w, h)
+}
+
+func (m Model) saveEditedHost() error {
+	if m.editHost.index < 0 || m.editHost.index >= len(m.hosts) {
+		return errors.New("indice fuera de rango")
+	}
+	if strings.TrimSpace(m.editHost.host.Name) == "" ||
+		strings.TrimSpace(m.editHost.host.User) == "" ||
+		strings.TrimSpace(m.editHost.host.IP) == "" {
+		return errors.New("campos clave vacios")
+	}
+	m.hosts[m.editHost.index] = m.editHost.host
+	return saveHosts(m.configPath, m.hosts)
+}
+
+func newMenuList(title string, items []list.Item, filter bool) list.Model {
+	l := list.New(items, list.NewDefaultDelegate(), 0, 0)
+	l.Title = title
+	l.SetFilteringEnabled(filter)
+	l.SetShowFilter(filter)
+	l.SetShowHelp(false)
+	l.SetShowStatusBar(false)
+	return l
+}
+
+func newHostList(title string, hosts []Host, width, height int) list.Model {
+	items := make([]list.Item, 0, len(hosts))
+	for i, h := range hosts {
+		items = append(items, hostItem{index: i, host: h})
+	}
+	l := list.New(items, list.NewDefaultDelegate(), 0, 0)
+	l.Title = title
+	l.SetFilteringEnabled(true)
+	l.SetShowFilter(true)
+	l.SetShowHelp(false)
+	l.SetShowStatusBar(false)
+	if width > 0 && height > 0 {
+		l.SetSize(maxInt(20, width-4), maxInt(5, height-6))
+	}
+	return l
+}
+
+func newKeyList(title string, keys []string, width, height int) list.Model {
+	items := make([]list.Item, 0, len(keys))
+	for _, k := range keys {
+		items = append(items, keyItem{name: k})
+	}
+	l := list.New(items, list.NewDefaultDelegate(), 0, 0)
+	l.Title = title
+	l.SetFilteringEnabled(true)
+	l.SetShowFilter(true)
+	l.SetShowHelp(false)
+	l.SetShowStatusBar(false)
+	if width > 0 && height > 0 {
+		l.SetSize(maxInt(20, width-4), maxInt(5, height-6))
+	}
+	return l
+}
+
+func newTextInput() textinput.Model {
+	ti := textinput.New()
+	ti.Prompt = "> "
+	ti.CharLimit = 0
+	ti.Width = 40
+	return ti
+}
+
+func newTextInputWithValue(value string, placeholder string) textinput.Model {
+	ti := newTextInput()
+	ti.Placeholder = placeholder
+	ti.SetValue(value)
+	ti.Focus()
+	return ti
+}
+
+func shouldGoBack(msg tea.KeyMsg, l list.Model) bool {
+	if msg.String() != "esc" {
+		return false
+	}
+	if l.FilterState() == list.Filtering {
+		return false
+	}
+	return true
+}
+
+func parseUserAt(value string) (string, string, bool) {
+	parts := strings.SplitN(value, "@", 2)
+	if len(parts) != 2 {
+		return "", "", false
+	}
+	user := strings.TrimSpace(parts[0])
+	ip := strings.TrimSpace(parts[1])
+	if user == "" || ip == "" {
+		return "", "", false
+	}
+	return user, ip, true
+}
+
+func loadHosts(path string) ([]Host, error) {
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			if err := os.WriteFile(path, []byte("[]"), 0o644); err != nil {
+				return nil, err
+			}
+			return []Host{}, nil
+		}
+		return nil, err
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	trimmed := strings.TrimSpace(string(data))
+	if len(trimmed) == 0 {
+		trimmed = "[]"
+	}
+
+	var hosts []Host
+	if err := json.Unmarshal([]byte(trimmed), &hosts); err == nil {
+		return hosts, nil
+	}
+
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(trimmed), &obj); err == nil {
+		if raw, ok := obj["hosts"]; ok {
+			var wrapped []Host
+			if err := json.Unmarshal(raw, &wrapped); err == nil {
+				return wrapped, nil
+			}
+		}
+	}
+
+	var single Host
+	if err := json.Unmarshal([]byte(trimmed), &single); err == nil {
+		if strings.TrimSpace(single.Name) != "" || strings.TrimSpace(single.User) != "" || strings.TrimSpace(single.IP) != "" || single.Key != nil {
+			return []Host{single}, nil
+		}
+	}
+
+	var hostMap map[string]Host
+	if err := json.Unmarshal([]byte(trimmed), &hostMap); err == nil {
+		list := make([]Host, 0, len(hostMap))
+		for name, host := range hostMap {
+			if strings.TrimSpace(host.Name) == "" {
+				host.Name = name
+			}
+			list = append(list, host)
+		}
+		return list, nil
+	}
+
+	return nil, fmt.Errorf("formato de hosts invalido")
+}
+
+func saveHosts(path string, hosts []Host) error {
+	data, err := json.MarshalIndent(hosts, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o644)
+}
+
+func listKeyFiles(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []string{}, nil
+		}
+		return nil, err
+	}
+	keys := []string{}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		keys = append(keys, entry.Name())
+	}
+	return keys, nil
+}
+
+func keyValue(host Host) string {
+	if host.Key == nil {
+		return ""
+	}
+	return *host.Key
+}
+
+func strPtr(value string) *string {
+	v := value
+	return &v
+}
+
+func strPtrOrNil(value string) *string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	return strPtr(value)
+}
+
+func expandHome(path string, home string) string {
+	if path == "" {
+		return ""
+	}
+	if path == "~" {
+		return home
+	}
+	if strings.HasPrefix(path, "~/") || strings.HasPrefix(path, "~\\") {
+		return filepath.Join(home, path[2:])
+	}
+	return path
+}
+
+func startSSHCmd(home, user, ip, key string) tea.Cmd {
+	args := []string{}
+	key = expandHome(strings.TrimSpace(key), home)
+	if key != "" {
+		args = append(args, "-i", key)
+	}
+	args = append(args, fmt.Sprintf("%s@%s", user, ip))
+	cmd := exec.Command("ssh", args...)
+	return tea.ExecProcess(cmd, func(err error) tea.Msg {
+		return sshFinishedMsg{err: err}
+	})
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
