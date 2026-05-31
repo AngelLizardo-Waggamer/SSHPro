@@ -36,8 +36,11 @@ type Model struct {
 	inputs    []textinput.Model
 	focus     int
 	editIndex int
-	formError string
-	status    string
+	formError     string
+	status        string
+	confirmDelete bool
+	confirmIndex  int
+	confirmName   string
 
 	styles styles
 	width  int
@@ -69,12 +72,13 @@ func NewModel(store *storage.Store, hosts []storage.Host) Model {
 	l.SetShowPagination(true)
 
 	return Model{
-		store:     store,
-		hosts:     hosts,
-		list:      l,
-		mode:      modeList,
-		editIndex: -1,
-		styles:    defaultStyles(),
+		store:        store,
+		hosts:        hosts,
+		list:         l,
+		mode:         modeList,
+		editIndex:    -1,
+		confirmIndex: -1,
+		styles:       defaultStyles(),
 	}
 }
 
@@ -123,6 +127,29 @@ func (m Model) updateList(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			break
 		}
+		if m.confirmDelete {
+			switch msg.String() {
+			case "y", "enter":
+				if m.confirmIndex >= 0 {
+					if err := m.deleteHost(m.confirmIndex); err != nil {
+						m.status = fmt.Sprintf("Error al eliminar: %v", err)
+					}
+				}
+				m.confirmDelete = false
+				m.confirmIndex = -1
+				m.confirmName = ""
+				return m, nil
+			case "n", "esc":
+				m.confirmDelete = false
+				m.confirmIndex = -1
+				m.confirmName = ""
+				return m, nil
+			case "ctrl+c", "q":
+				return m, tea.Quit
+			default:
+				return m, nil
+			}
+		}
 		switch msg.String() {
 		case "ctrl+c", "q":
 			return m, tea.Quit
@@ -135,10 +162,11 @@ func (m Model) updateList(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "d":
-			if _, idx, ok := m.selectedHost(); ok {
-				if err := m.deleteHost(idx); err != nil {
-					m.status = fmt.Sprintf("Error al eliminar: %v", err)
-				}
+			if host, idx, ok := m.selectedHost(); ok {
+				m.confirmDelete = true
+				m.confirmIndex = idx
+				m.confirmName = host.Name
+				m.status = ""
 			}
 			return m, nil
 		case "enter":
