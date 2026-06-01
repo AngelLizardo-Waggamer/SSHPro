@@ -6,11 +6,17 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"ssh-pro/config"
 	"ssh-pro/storage"
 	"ssh-pro/ui"
 )
 
 func main() {
+	if _, err := config.EnsureThemeFile(); err != nil {
+		fmt.Fprintf(os.Stderr, "No se pudo preparar el tema: %v\n", err)
+		os.Exit(1)
+	}
+
 	path, err := storage.DefaultPath()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "No se pudo resolver la ruta de configuración: %v\n", err)
