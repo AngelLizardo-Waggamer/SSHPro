@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -107,4 +108,65 @@ func EnsureThemeFile() (string, error) {
 	}
 
 	return path, nil
+}
+
+// LoadThemeConfig reads the theme configuration from disk.
+func LoadThemeConfig() (ThemeConfig, error) {
+	path, err := DefaultThemePath()
+	if err != nil {
+		return ThemeConfig{}, err
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ThemeConfig{}, fmt.Errorf("read theme JSON: %w", err)
+	}
+
+	if len(bytes.TrimSpace(data)) == 0 {
+		return DefaultThemeConfig(), nil
+	}
+
+	var cfg ThemeConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return ThemeConfig{}, fmt.Errorf("parse theme JSON: %w", err)
+	}
+
+	if len(cfg.Themes) == 0 {
+		return DefaultThemeConfig(), nil
+	}
+
+	return cfg, nil
+}
+
+// SaveThemeConfig writes the theme configuration to disk.
+func SaveThemeConfig(cfg ThemeConfig) error {
+	path, err := DefaultThemePath()
+	if err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create theme dir: %w", err)
+	}
+
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode theme JSON: %w", err)
+	}
+	data = append(data, '\n')
+
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return fmt.Errorf("write theme JSON: %w", err)
+	}
+	return nil
+}
+
+// FindTheme finds a theme by name.
+func FindTheme(cfg ThemeConfig, name string) (Theme, bool) {
+	for _, theme := range cfg.Themes {
+		if theme.Name == name {
+			return theme, true
+		}
+	}
+	return Theme{}, false
 }
