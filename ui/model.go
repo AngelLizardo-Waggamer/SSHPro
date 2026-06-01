@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"ssh-pro/config"
 	sshcmd "ssh-pro/ssh"
 	"ssh-pro/storage"
 )
@@ -20,6 +21,7 @@ type mode int
 const (
 	modeList mode = iota
 	modeForm
+	modeTheme
 )
 
 type sshFinishedMsg struct {
@@ -30,8 +32,11 @@ type sshFinishedMsg struct {
 type Model struct {
 	store *storage.Store
 	hosts []storage.Host
-	list  list.Model
-	mode  mode
+	list      list.Model
+	themeList list.Model
+	mode      mode
+
+	themeConfig config.ThemeConfig
 
 	inputs    []textinput.Model
 	focus     int
@@ -48,16 +53,16 @@ type Model struct {
 }
 
 // NewModel creates a new UI model.
-func NewModel(store *storage.Store, hosts []storage.Host) Model {
+func NewModel(store *storage.Store, hosts []storage.Host, themeConfig config.ThemeConfig) Model {
 	items := listItemsFromHosts(hosts)
-	delegate := list.NewDefaultDelegate()
-	selectedBase := lipgloss.NewStyle().
-		Border(lipgloss.NormalBorder(), false, false, false, true).
-		BorderForeground(lipgloss.Color("33")).
-		Foreground(lipgloss.Color("81")).
-		Padding(0, 0, 0, 1)
-	delegate.Styles.SelectedTitle = selectedBase
-	delegate.Styles.SelectedDesc = selectedBase.Foreground(lipgloss.Color("75"))
+
+	theme, ok := config.FindTheme(themeConfig, themeConfig.Current)
+	if !ok {
+		theme = config.DefaultTheme()
+		themeConfig.Current = theme.Name
+	}
+
+	delegate := listDelegateFromTheme(theme)
 	l := list.New(items, delegate, 0, 0)
 	l.Title = "Hosts disponibles:"
 	l.SetShowTitle(true)
@@ -66,20 +71,38 @@ func NewModel(store *storage.Store, hosts []storage.Host) Model {
 	l.SetFilteringEnabled(true)
 	l.SetShowFilter(true)
 	l.FilterInput.Prompt = "Buscar: "
-	l.FilterInput.PromptStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("75"))
-	l.FilterInput.TextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("81"))
 	l.FilterInput.Placeholder = "escribe para filtrar"
 	l.SetShowPagination(true)
+	l.FilterInput.PromptStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(theme.Colors.FilterPrompt))
+	l.FilterInput.TextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(theme.Colors.FilterText))
 
-	return Model{
+	themeItems := themeItemsFromConfig(themeConfig)
+	themeList := list.New(themeItems, listDelegateFromTheme(theme), 0, 0)
+	themeList.Title = "Temas disponibles:"
+	themeList.SetShowTitle(true)
+	themeList.SetShowHelp(false)
+	themeList.SetShowStatusBar(false)
+	themeList.SetFilteringEnabled(true)
+	themeList.SetShowFilter(true)
+	themeList.FilterInput.Prompt = "Buscar: "
+	themeList.FilterInput.PromptStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(theme.Colors.FilterPrompt))
+	themeList.FilterInput.TextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(theme.Colors.FilterText))
+	themeList.FilterInput.Placeholder = "escribe para filtrar"
+	themeList.SetShowPagination(true)
+
+	model := Model{
 		store:        store,
 		hosts:        hosts,
 		list:         l,
+		themeList:    themeList,
 		mode:         modeList,
+		themeConfig:  themeConfig,
 		editIndex:    -1,
 		confirmIndex: -1,
-		styles:       defaultStyles(),
+		styles:       stylesFromTheme(theme),
 	}
+
+	return model
 }
 
 // Init implements tea.Model.
@@ -94,6 +117,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateList(msg)
 	case modeForm:
 		return m.updateForm(msg)
+	case modeTheme:
+		return m.updateTheme(msg)
 	default:
 		return m, nil
 	}
@@ -104,6 +129,9 @@ func (m Model) View() string {
 	if m.mode == modeForm {
 		return m.viewForm()
 	}
+	if m.mode == modeTheme {
+		return m.viewTheme()
+	}
 	return m.viewList()
 }
 
@@ -113,6 +141,7 @@ func (m Model) updateList(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.updateListSize()
+		m.updateThemeListSize()
 	case sshFinishedMsg:
 		if msg.err != nil {
 			m.status = fmt.Sprintf("SSH terminó con error: %v", msg.err)
@@ -168,6 +197,9 @@ func (m Model) updateList(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.confirmName = host.Name
 				m.status = ""
 			}
+			return m, nil
+		case "t":
+			m.startThemePicker()
 			return m, nil
 		case "enter":
 			if host, _, ok := m.selectedHost(); ok {
@@ -235,11 +267,93 @@ func (m Model) updateForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
+func (m Model) updateTheme(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		m.updateThemeListSize()
+	case tea.KeyMsg:
+		if m.themeList.SettingFilter() {
+			if msg.String() == "ctrl+c" {
+				return m, tea.Quit
+			}
+			break
+		}
+		switch msg.String() {
+		case "esc":
+			m.mode = modeList
+			return m, nil
+		case "ctrl+c", "q":
+			return m, tea.Quit
+		case "enter":
+			if item, ok := m.themeList.SelectedItem().(themeItem); ok {
+				if err := m.applyTheme(item.theme); err != nil {
+					m.status = fmt.Sprintf("No se pudo aplicar el tema: %v", err)
+				} else {
+					m.status = fmt.Sprintf("Tema %q aplicado.", item.theme.Name)
+				}
+			}
+			m.mode = modeList
+			return m, nil
+		}
+	}
+
+	var cmd tea.Cmd
+	m.themeList, cmd = m.themeList.Update(msg)
+	return m, cmd
+}
+
 func (m *Model) updateListSize() {
 	contentWidth, contentHeight := m.contentSize()
 	width := max(20, contentWidth)
 	height := max(6, contentHeight-listReservedLines())
 	m.list.SetSize(width, height)
+}
+
+func (m *Model) updateThemeListSize() {
+	contentWidth, contentHeight := m.contentSize()
+	width := max(20, contentWidth)
+	height := max(6, contentHeight-listReservedLines())
+	m.themeList.SetSize(width, height)
+}
+
+func (m *Model) startThemePicker() {
+	m.mode = modeTheme
+	m.themeList.SetItems(themeItemsFromConfig(m.themeConfig))
+	m.updateThemeListSize()
+	for i, theme := range m.themeConfig.Themes {
+		if theme.Name == m.themeConfig.Current {
+			m.themeList.Select(i)
+			break
+		}
+	}
+}
+
+func (m *Model) applyTheme(theme config.Theme) error {
+	m.themeConfig.Current = theme.Name
+	if err := config.SaveThemeConfig(m.themeConfig); err != nil {
+		return err
+	}
+
+	m.styles = stylesFromTheme(theme)
+
+	delegate := listDelegateFromTheme(theme)
+	m.list.SetDelegate(delegate)
+	m.themeList.SetDelegate(delegate)
+
+	m.list.FilterInput.PromptStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(theme.Colors.FilterPrompt))
+	m.list.FilterInput.TextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(theme.Colors.FilterText))
+	m.themeList.FilterInput.PromptStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(theme.Colors.FilterPrompt))
+	m.themeList.FilterInput.TextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(theme.Colors.FilterText))
+
+	m.themeList.SetItems(themeItemsFromConfig(m.themeConfig))
+
+	if m.mode == modeForm {
+		m.setFocus(m.focus)
+	}
+
+	return nil
 }
 
 func (m *Model) startForm(host storage.Host, editIndex int) {
