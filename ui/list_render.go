@@ -1,13 +1,16 @@
 package ui
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 func (m Model) viewList() string {
 	var b strings.Builder
 
 	b.WriteString(m.styles.title.Render(asciiTitle))
 	b.WriteString("\n")
-	b.WriteString(m.styles.subtitle.Render("by aahl"))
+	b.WriteString(m.styles.subtitle.Render(fmt.Sprintf("by aahl • v%s", appVersion)))
 	b.WriteString("\n\n")
 	b.WriteString(m.list.View())
 
@@ -34,7 +37,7 @@ func (m Model) viewTheme() string {
 
 	b.WriteString(m.styles.title.Render(asciiTitle))
 	b.WriteString("\n")
-	b.WriteString(m.styles.subtitle.Render("by aahl"))
+	b.WriteString(m.styles.subtitle.Render(fmt.Sprintf("by aahl • v%s", appVersion)))
 	b.WriteString("\n\n")
 	b.WriteString(m.themeList.View())
 

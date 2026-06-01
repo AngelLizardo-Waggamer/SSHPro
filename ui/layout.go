@@ -13,6 +13,8 @@ const (
 	listHeaderPadding = 2 // subtitle + blank line
 )
 
+const appVersion = "1.1"
+
 const asciiTitle = `::::::::   ::::::::  :::    ::: :::::::::  :::::::::   ::::::::
 :+:    :+: :+:    :+: :+:    :+: :+:    :+: :+:    :+: :+:    :+:
 +:+        +:+        +:+    +:+ +:+    +:+ +:+    +:+ +:+    +:+
