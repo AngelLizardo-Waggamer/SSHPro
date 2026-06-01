@@ -19,7 +19,7 @@ func DefaultPath() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve home dir: %w", err)
 	}
-	return filepath.Join(home, ".ssh_configured_hosts.json"), nil
+	return filepath.Join(home, ".sshpro", "configured_hosts.json"), nil
 }
 
 // NewStore creates a new Store for the given path.
