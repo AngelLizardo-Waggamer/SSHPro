@@ -17,6 +17,8 @@ go install
 ```
 
 ## Uso básico
+
+### Modo interactivo (TUI)
 ```bash
 ./sshpro
 ```
@@ -24,6 +26,20 @@ go install
 Al iniciar:
 - Se crea automáticamente `~/.ssh_configured_hosts.json` si no existe.
 - Se carga la lista de hosts y se muestra el menú interactivo.
+
+### Conexión rápida por nombre (CLI)
+Puedes conectarte directamente pasando parte del nombre del servidor como argumento:
+
+```bash
+./sshpro grafana
+./sshpro server-grafana
+```
+
+- La búsqueda no distingue entre mayúsculas y minúsculas (*case-insensitive*).
+- Los guiones `-` se tratan de manera equivalente a espacios.
+- Si hay una coincidencia exacta, se conecta automáticamente por SSH.
+- Si hay 2 o más coincidencias, se listan los nombres encontrados para que especifiques uno más detallado.
+- Si no se encuentra ninguno, se informa adecuadamente.
 
 ## Atajos
 - `[enter]` conectar
