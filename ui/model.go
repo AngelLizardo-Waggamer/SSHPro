@@ -208,6 +208,7 @@ func (m Model) updateList(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.status = fmt.Sprintf("Error al preparar SSH: %v", err)
 					return m, nil
 				}
+				_ = storage.SaveLastHost(host.Name)
 				return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
 					return sshFinishedMsg{err: err}
 				})
